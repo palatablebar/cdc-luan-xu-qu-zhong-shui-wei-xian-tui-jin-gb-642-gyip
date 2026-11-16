@@ -1,0 +1,6 @@
+# profile-export source=order rows=5 charset=utf-8 generated=2026-11-15T16:10:00+08:00
+{"customer_id":"C1001","source":"order","event_time":"2026-11-15T08:00:00Z","fields":{"name":"上海云图科技有限公司","unified_id":"91310115MA1K4A2B8C","phone":"021-58880001","contact":"张伟","address":"上海市浦东新区张江路 100 号"},"verified":["name","unified_id"]}
+{"customer_id":"C1002","source":"order","event_time":"2026-11-15T08:01:00Z","fields":{"name":"北京岚山贸易有限公司","unified_id":"91110108MA01C7Y3XD","phone":"010-66660002","contact":"王芳","address":"北京市海淀区中关村大街 27 号"},"verified":["name","unified_id"]}
+{"customer_id":"C1003","source":"order","event_time":"2026-11-15T08:02:00Z","fields":{"name":"深圳市启航供应链有限公司","unified_id":"91440300MA5F8Q1R9T","phone":"0755-26660003","contact":"李强","address":"深圳市南山区科技园南路 8 号"},"verified":["name","unified_id"]}
+{"customer_id":"C1004","source":"order","event_time":"2026-11-15T08:03:00Z","fields":{"name":"杭州明州电子商务有限公司","unified_id":"91330106MA27W2XY4B","phone":"0571-88880004","contact":"陈静","address":"杭州市西湖区文三路 90 号"},"verified":["name","unified_id"]}
+{"customer_id":"C1005","source":"order","event_time":"2026-11-15T08:04:00Z","fields":{"name":"成都锦江餐饮管理有限公司","unified_id":"91510104MA6C9P2K1A","phone":"028-86660005","contact":"刘洋","address":"成都市锦江区红星路三段 12 号"},"verified":["name","unified_id"]}

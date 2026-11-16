@@ -9,11 +9,16 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sqlite3
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
+
+
+def dt_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -70,6 +75,72 @@ CREATE TABLE IF NOT EXISTS totals (
 );
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
+);
+-- M8 客户档案裁决：跨批次持久状态（档案是唯一对外版本，不按批次隔离）
+CREATE TABLE IF NOT EXISTS profile_batches (
+    batch_id TEXT PRIMARY KEY,
+    batch_key TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    input_digest TEXT NOT NULL,
+    counters_json TEXT NOT NULL DEFAULT '{}',
+    note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_profile_batches_key
+    ON profile_batches(batch_key, status);
+CREATE TABLE IF NOT EXISTS profile_fields (
+    customer_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    value TEXT,
+    source TEXT,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    updated_event_time TEXT,
+    updated_batch_id TEXT,
+    PRIMARY KEY (customer_id, field)
+);
+CREATE TABLE IF NOT EXISTS profile_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    event_time TEXT,
+    row_ref TEXT NOT NULL DEFAULT '',
+    row_sig TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    reason_code TEXT,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_profile_decisions_batch
+    ON profile_decisions(batch_id);
+CREATE TABLE IF NOT EXISTS profile_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    old_value TEXT,
+    old_source TEXT,
+    new_value TEXT,
+    new_source TEXT,
+    resolution TEXT NOT NULL DEFAULT 'kept',
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT NOT NULL DEFAULT '',
+    first_batch_id TEXT NOT NULL,
+    last_batch_id TEXT NOT NULL,
+    times INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(customer_id, field, old_value, new_value)
+);
+CREATE TABLE IF NOT EXISTS profile_seen (
+    row_sig TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    first_batch_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -317,6 +388,162 @@ class Store:
         for table in ("inputs", "events", "snapshots", "watermarks", "stages"):
             out[table] = self._all(
                 f"SELECT COUNT(*) AS n FROM {table} WHERE batch_id=?", (batch_id,))[0]["n"]
+        return out
+
+    # ---------- M8 客户档案裁决 ----------
+    def find_profile_batch_by_key(self, batch_key: str) -> dict | None:
+        rows = self._all(
+            "SELECT * FROM profile_batches WHERE batch_key=? AND status='done' "
+            "ORDER BY created_at LIMIT 1", (batch_key,))
+        return rows[0] if rows else None
+
+    def latest_profile_batch(self) -> dict | None:
+        rows = self._all(
+            "SELECT * FROM profile_batches WHERE status='done' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1", ())
+        return rows[0] if rows else None
+
+    def list_profile_batches(self, limit: int = 20) -> list[dict]:
+        return self._all(
+            "SELECT * FROM profile_batches ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (limit,))
+
+    def load_profile_seen(self) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT row_sig FROM profile_seen").fetchall()
+        return {r["row_sig"] for r in rows}
+
+    def load_profile_fields(self) -> dict:
+        """按客户分组的当前档案：{customer_id: {field: 字段状态}}。"""
+        rows = self._all(
+            "SELECT * FROM profile_fields ORDER BY customer_id, field", ())
+        out: dict[str, dict[str, dict]] = {}
+        for row in rows:
+            out.setdefault(row["customer_id"], {})[row["field"]] = {
+                "value": row["value"],
+                "source": row["source"],
+                "confirmed": bool(row["confirmed"]),
+                "updated_event_time": row["updated_event_time"],
+                "updated_batch_id": row["updated_batch_id"],
+            }
+        return out
+
+    def load_profile_decisions(self, limit: int = 200,
+                               batch_id: str | None = None) -> list[dict]:
+        if batch_id:
+            rows = self._all(
+                "SELECT * FROM profile_decisions WHERE batch_id=? "
+                "ORDER BY id DESC LIMIT ?", (batch_id, limit))
+        else:
+            rows = self._all(
+                "SELECT * FROM profile_decisions ORDER BY id DESC LIMIT ?", (limit,))
+        for row in rows:
+            row["detail"] = json.loads(row.pop("detail_json") or "{}")
+        return rows
+
+    def load_profile_conflicts(self, status: str | None = None) -> list[dict]:
+        if status:
+            return self._all(
+                "SELECT * FROM profile_conflicts WHERE status=? "
+                "ORDER BY updated_at DESC, id DESC", (status,))
+        return self._all(
+            "SELECT * FROM profile_conflicts ORDER BY status, updated_at DESC, id DESC",
+            ())
+
+    def save_profile_run(self, *, batch: dict, decisions: list[dict],
+                         fields: list[dict], conflicts: list[dict],
+                         seen: list[dict]) -> None:
+        """一次裁决运行落库：批次 + 裁决记录 + 档案字段 + 冲突 + 已见签名，单事务。
+
+        任何一步失败整体回滚，档案保持旧版（失败后保留旧版）。
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO profile_batches (batch_id,batch_key,run_id,source,status,
+                        created_at,finished_at,input_digest,counters_json,note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(batch_id) DO UPDATE SET
+                     status=excluded.status, finished_at=excluded.finished_at,
+                     counters_json=excluded.counters_json, note=excluded.note""",
+                (batch["batch_id"], batch["batch_key"], batch["run_id"],
+                 batch["source"], batch["status"], batch["created_at"],
+                 batch.get("finished_at"), batch["input_digest"],
+                 json.dumps(batch.get("counters", {}), ensure_ascii=False),
+                 batch.get("note", "")))
+            for row in decisions:
+                conn.execute(
+                    """INSERT INTO profile_decisions (batch_id,run_id,customer_id,source,
+                            event_time,row_ref,row_sig,verdict,reason_code,detail_json,
+                            created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (batch["batch_id"], batch["run_id"], row["customer_id"],
+                     row["source"], row.get("event_time"), row.get("row_ref", ""),
+                     row["row_sig"], row["verdict"], row.get("reason_code"),
+                     json.dumps(row.get("detail", {}), ensure_ascii=False),
+                     batch["created_at"]))
+            for row in fields:
+                conn.execute(
+                    """INSERT INTO profile_fields (customer_id,field,value,source,
+                            confirmed,updated_event_time,updated_batch_id)
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(customer_id, field) DO UPDATE SET
+                         value=excluded.value, source=excluded.source,
+                         confirmed=excluded.confirmed,
+                         updated_event_time=excluded.updated_event_time,
+                         updated_batch_id=excluded.updated_batch_id""",
+                    (row["customer_id"], row["field"], row.get("value"),
+                     row.get("source"), 1 if row.get("confirmed") else 0,
+                     row.get("updated_event_time"), batch["batch_id"]))
+            for row in conflicts:
+                conn.execute(
+                    """INSERT INTO profile_conflicts (customer_id,field,old_value,
+                            old_source,new_value,new_source,resolution,status,note,
+                            first_batch_id,last_batch_id,times,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(customer_id, field, old_value, new_value)
+                       DO UPDATE SET last_batch_id=excluded.last_batch_id,
+                         times=profile_conflicts.times+1,
+                         updated_at=excluded.updated_at""",
+                    (row["customer_id"], row["field"], row.get("old_value"),
+                     row.get("old_source"), row.get("new_value"),
+                     row.get("new_source"), row.get("resolution", "kept"),
+                     "pending", "", batch["batch_id"], batch["batch_id"], 1,
+                     batch["created_at"], batch["created_at"]))
+            for row in seen:
+                conn.execute(
+                    """INSERT INTO profile_seen (row_sig,customer_id,source,
+                            first_batch_id,created_at)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(row_sig) DO NOTHING""",
+                    (row["row_sig"], row["customer_id"], row["source"],
+                     batch["batch_id"], batch["created_at"]))
+
+    def update_profile_batch_counters(self, batch_id: str, counters: dict) -> None:
+        """事务落库后回写批次计数（如待核对总数需按库内实际状态补齐）。"""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE profile_batches SET counters_json=? WHERE batch_id=?",
+                (json.dumps(counters, ensure_ascii=False), batch_id))
+
+    def ack_profile_conflict(self, conflict_id: int, note: str = "") -> dict | None:
+        """标记冲突已核对；不存在的 id 返回 None。只改状态，不改档案值。"""
+        with self.connect() as conn:
+            found = conn.execute(
+                "SELECT id FROM profile_conflicts WHERE id=?", (conflict_id,)).fetchone()
+            if found is None:
+                return None
+            conn.execute(
+                "UPDATE profile_conflicts SET status='acknowledged', note=?, "
+                "updated_at=? WHERE id=?",
+                (note, dt_now_iso(), conflict_id))
+        rows = self._all("SELECT * FROM profile_conflicts WHERE id=?", (conflict_id,))
+        return rows[0] if rows else None
+
+    def count_profile_rows(self) -> dict:
+        out = {}
+        for table in ("profile_batches", "profile_fields", "profile_decisions",
+                      "profile_conflicts", "profile_seen"):
+            out[table] = self._all(f"SELECT COUNT(*) AS n FROM {table}", ())[0]["n"]
         return out
 
     def _all(self, sql: str, args: tuple) -> list[dict]:

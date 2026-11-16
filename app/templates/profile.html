@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h1>客户档案</h1>
+    <p class="panel-sub">{{ summary.customers | num }} 客户 · {{ summary.pending_conflicts | num }} 待核对冲突 · 批次 {{ summary.last_batch_id or '未运行' }}</p>
+  </div>
+  <div class="panel-body">
+    <div class="actions">
+      <select id="profile-source-select" aria-label="档案来源">
+        {% for key in profile_source_keys %}
+        <option value="{{ key }}">{{ profile_source_labels[key] }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" id="btn-profile-import" type="button">采信档案</button>
+      <span class="hint">整行裁决：采用新来源或沿用旧来源；已确认字段不改回空值；同一来源重跑不新增</span>
+    </div>
+  </div>
+</section>
+
+<div class="split">
+  <aside class="rail" aria-label="档案计数">
+    <dl>
+      <div class="row"><dt class="key">客户数</dt><dd class="value">{{ summary.customers | num }}</dd></div>
+      <div class="row"><dt class="key">已核验字段</dt><dd class="value is-ok">{{ summary.confirmed_fields | num }}</dd></div>
+      <div class="row"><dt class="key">待核对冲突</dt><dd class="value {% if summary.pending_conflicts %}is-warn{% else %}is-ok{% endif %}">{{ summary.pending_conflicts | num }}</dd></div>
+      <div class="row"><dt class="key">裁决记录</dt><dd class="value">{{ summary.decisions | num }}</dd></div>
+    </dl>
+    <dl>
+      {% for row in profile_batches[:5] %}
+      <div class="row"><dt class="key mono">{{ row.batch_id }}</dt><dd class="value">{{ row.note or '—' }}</dd></div>
+      {% endfor %}
+    </dl>
+  </aside>
+
+  <div class="stack">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>对外档案（逐字段标注来源）</h2>
+        <p class="panel-sub">{{ customers | length }} 客户</p>
+      </div>
+      <div class="panel-body tight">
+        <div class="table-wrap">
+          <table class="grid" data-sortable>
+            <thead>
+              <tr>
+                <th>客户号</th>
+                {% for name in field_order %}<th>{{ profile_fields[name].label }}</th>{% endfor %}
+                <th>待核对</th><th>最近裁决</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in customers %}
+              <tr>
+                <td class="mono nowrap">{{ row.customer_id }}</td>
+                {% for name in field_order %}
+                {% set f = row.fields[name] %}
+                <td>
+                  {% if f.value %}
+                  <span>{{ f.value }}</span><br>
+                  <code class="code" title="来源：{{ f.source_label }}">{{ f.source_label }}</code>
+                  {% if f.confirmed %}<span class="state state-ok" title="已核验">已核验</span>{% endif %}
+                  {% else %}<span class="is-dim">—</span>{% endif %}
+                </td>
+                {% endfor %}
+                <td class="num">
+                  {% if row.pending_conflicts %}<span class="state state-pending">{{ row.pending_conflicts }} 待核对</span>{% else %}<span class="is-dim">0</span>{% endif %}
+                </td>
+                <td class="nowrap">
+                  {% if row.last_verdict %}
+                  <span class="state state-{{ {'adopt': 'ok', 'keep': 'info', 'failed': 'bad', 'duplicate': 'duplicate'}[row.last_verdict] }}">{{ verdict_labels[row.last_verdict] }}</span>
+                  <br><code class="code">{{ row.last_source_label }}</code>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if not customers %}<p class="empty">还没有档案，先采信一个来源。</p>{% endif %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>待核对冲突</h2>
+        <p class="panel-sub">{{ conflicts | length }} 条</p>
+      </div>
+      <div class="panel-body tight">
+        <div class="table-wrap">
+          <table class="grid">
+            <thead><tr><th>客户号</th><th>字段</th><th>档案现值（来源）</th><th>对方值（来源）</th><th>裁决</th><th>状态</th><th>次数</th><th>操作</th></tr></thead>
+            <tbody>
+              {% for row in conflicts %}
+              <tr>
+                <td class="mono nowrap">{{ row.customer_id }}</td>
+                <td>{{ profile_fields[row.field].label }}</td>
+                <td>{{ row.old_value }} <code class="code">{{ source_kind_labels.get(row.old_source, '—') }}</code></td>
+                <td>{{ row.new_value }} <code class="code">{{ source_kind_labels.get(row.new_source, '—') }}</code></td>
+                <td>{{ '已采用对方值' if row.resolution == 'adopted' else '保留现值' }}</td>
+                <td><span class="state state-{{ 'pending' if row.status == 'pending' else 'ok' }}">{{ conflict_status_labels[row.status] }}</span></td>
+                <td class="num">{{ row.times }}</td>
+                <td>
+                  {% if row.status == 'pending' %}
+                  <button class="btn btn-ghost btn-ack" type="button" data-id="{{ row.id }}">标记已核对</button>
+                  {% else %}<span class="is-dim">—</span>{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if not conflicts %}<p class="empty">没有冲突。</p>{% endif %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>裁决记录</h2>
+        <p class="panel-sub">最近 {{ decisions | length }} 条</p>
+      </div>
+      <div class="panel-body tight">
+        <div class="table-wrap">
+          <table class="grid">
+            <thead><tr><th>行号引用</th><th>客户号</th><th>来源</th><th>事件时间</th><th>整行裁决</th><th>字段明细</th></tr></thead>
+            <tbody>
+              {% for row in decisions %}
+              <tr>
+                <td class="mono nowrap">{{ row.row_ref }}</td>
+                <td class="mono nowrap">{{ row.customer_id or '—' }}</td>
+                <td><code class="code">{{ source_kind_labels.get(row.source, row.source) }}</code></td>
+                <td class="mono nowrap">{{ row.event_time | localdt }}</td>
+                <td class="nowrap">
+                  <span class="state state-{{ {'adopt': 'ok', 'keep': 'info', 'failed': 'bad', 'duplicate': 'duplicate'}[row.verdict] }}">{{ verdict_labels[row.verdict] }}</span>
+                </td>
+                <td class="ellipsis" title="{% for f in row.detail.fields %}{{ profile_fields[f.field].label }}:{{ f.label }} {% endfor %}">
+                  {% if row.detail.fields %}
+                    {% for f in row.detail.fields %}
+                    <span class="{% if f.conflict %}is-warn{% endif %}">{{ profile_fields[f.field].label }}·{{ f.label }}</span>{% if not loop.last %}；{% endif %}
+                    {% endfor %}
+                  {% else %}
+                    {% for e in row.detail.errors or [] %}<span class="is-bad">{{ e.field }} {{ e.message }}</span>{% if not loop.last %}；{% endif %}{% endfor %}
+                    {{ row.detail.note }}
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if not decisions %}<p class="empty">还没有裁决记录。</p>{% endif %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

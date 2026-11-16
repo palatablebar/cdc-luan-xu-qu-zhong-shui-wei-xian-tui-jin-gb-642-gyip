@@ -11,7 +11,8 @@ docker compose exec -T app python -m pytest -q
 ```
 
 首次启动会用 `sample_data/` 的三个文件跑一次采信（`app/bootstrap.py`），页面直接有数据；
-重复启动命中批次键，走幂等重放。
+档案模块同样用两个客户来源文件（`customers_order.jsonl` / `customers_settlement.jsonl`）
+跑一次双来源裁决；重复启动命中批次键，走幂等重放。
 
 ## 2 主流程（页面）
 
@@ -20,6 +21,8 @@ docker compose exec -T app python -m pytest -q
 3. `/conflicts` 看冲突分组与隔离区，导出隔离 CSV；
 4. `/snapshot` 点「物化」，核对三条对账；
 5. `/batches` 看 `run_id`、输入 sha256 与阶段耗时，导出运行清单。
+6. `/profile` 选档案来源 → 点「采信档案」，看逐字段来源、整行裁决与待核对冲突，
+   核对后在冲突清单点「标记已核对」。
 
 ## 3 主流程（命令）
 
@@ -34,9 +37,15 @@ curl -s -o /tmp/quarantine.csv  "$BASE/api/export/quarantine.csv"
 curl -s -o /tmp/conflicts.csv   "$BASE/api/export/conflicts.csv"
 curl -s -o /tmp/snapshot.csv    "$BASE/api/export/snapshot.csv"
 curl -s -o /tmp/manifest.json   "$BASE/api/export/manifest.json"
+# 客户档案裁决
+curl -s -X POST $BASE/api/profile/import -H 'content-type: application/json' -d '{"source":"all"}'
+curl -s "$BASE/api/profile" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["summary"])'
+curl -s "$BASE/api/profile/conflicts?status=pending"
+curl -s -X POST $BASE/api/profile/conflicts/1/ack -H 'content-type: application/json' -d '{"note":"已电话核实"}'
 ```
 
 判定看数字：行账 42 = 27 + 2 + 3 + 10；键账 19 = 18 + 1；金额 1552.51 + 200.00 + 0.00 = 1752.51。
+档案样例：12 行 = 10 采用 + 1 失败 + 1 重复；待核对冲突 2（C1002 名称、C1003 统一标识）。
 
 ## 4 失败处置
 
@@ -48,6 +57,10 @@ curl -s -o /tmp/manifest.json   "$BASE/api/export/manifest.json"
 | 导入报 409 | `C_STALE_BATCH` | 拿到的是旧导出，重新导出后再跑 |
 | 快照键比预期少 | `W_PENDING_WINDOW` | 事件落在水位之后，等下一轮水位推过 |
 | 水位不前进 | `W_WATERMARK_REGRESS` | 检查导出端时钟与文件版本 |
+| 档案行整行失败 | `P_ROW_INVALID` | 按契约修正（统一标识 18 位、电话格式、来源一致）后重放 |
+| 客户出现两套名称 | `P_CONFLICT_PENDING` | 未核验值不能替换已核验标识；到 `/profile` 待核对清单核对 |
+| 档案字段被留空覆盖 | `P_BLANK_GUARD` | 空不覆盖已生效，原值保留；确认导出端为何留空 |
+| 档案重跑数据翻倍 | — | 不会发生：命中批次键直接复用；换批次键重投的行判 `P_DUPLICATE_ROW` |
 
 ## 5 重建数据库
 

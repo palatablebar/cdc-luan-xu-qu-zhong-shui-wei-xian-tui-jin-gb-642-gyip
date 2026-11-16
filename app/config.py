@@ -35,6 +35,7 @@ STAGE_LABELS = {
     "watermark": "水位迟到",
     "snapshot": "快照",
     "export": "导出",
+    "profile": "档案裁决",
 }
 STAGE_FLOW = "采信 → 契约 → 去重冲突 → 水位迟到 → 快照 → 导出"
 
@@ -112,6 +113,50 @@ CSV_COLUMNS = ("table", "pk", "version", "op", "event_time", "schema",
 
 # 半开区间的书面表达，页面与导出共用同一句
 WINDOW_NOTE = "快照窗口含 as_of；待定窗口为 (as_of, +inf)"
+
+# ---- M8 客户档案裁决：订单库 / 结算库 双来源 ----
+# 档案字段契约：identity=True 的是「已核验类」字段——替换必须带核验标记，
+# 两来源不一致时判待核对冲突；普通字段按 event_time 新旧裁决，空值一律不覆盖。
+PROFILE_FIELDS = {
+    "name": {"label": "企业名称", "identity": True},
+    "unified_id": {"label": "统一标识", "identity": True},
+    "phone": {"label": "联系电话", "identity": False},
+    "contact": {"label": "联系人", "identity": False},
+    "address": {"label": "地址", "identity": False},
+}
+PROFILE_FIELD_ORDER = tuple(PROFILE_FIELDS)
+PROFILE_IDENTITY_FIELDS = tuple(
+    key for key, spec in PROFILE_FIELDS.items() if spec["identity"])
+
+# 档案来源：结算库电话更新快但常留空已核验字段；订单库字段完整但慢
+PROFILE_SOURCES = {
+    "order": ("customers_order.jsonl",),
+    "settlement": ("customers_settlement.jsonl",),
+}
+PROFILE_SOURCE_ORDER = ("customers_order.jsonl", "customers_settlement.jsonl")
+PROFILE_FILE_SOURCE = {
+    "customers_order.jsonl": "order",
+    "customers_settlement.jsonl": "settlement",
+}
+PROFILE_SOURCE_LABELS = {
+    "all": "全部来源（订单库 + 结算库）",
+    "order": "订单库 customers_order.jsonl",
+    "settlement": "结算库 customers_settlement.jsonl",
+}
+PROFILE_SOURCE_KIND_LABELS = {"order": "订单库", "settlement": "结算库"}
+# 同一时刻平手时的确定性次序：订单库是系统主档，排前
+PROFILE_SOURCE_PRIORITY = {"order": 0, "settlement": 1}
+
+# 整行裁决结论：采用新来源 / 沿用旧来源 / 失败保留旧版 / 重复不应用
+PROFILE_VERDICTS = ("adopt", "keep", "failed", "duplicate")
+PROFILE_VERDICT_LABELS = {
+    "adopt": "采用新来源",
+    "keep": "沿用旧来源",
+    "failed": "失败保留旧版",
+    "duplicate": "重复不应用",
+}
+PROFILE_CONFLICT_STATUS = ("pending", "acknowledged")
+PROFILE_CONFLICT_STATUS_LABELS = {"pending": "待核对", "acknowledged": "已核对"}
 
 
 @dataclass(frozen=True)

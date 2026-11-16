@@ -1,15 +1,20 @@
 # 深度登记 cdcwater（CDC 乱序去重与水位线推进）
 
-- 规模：中型（7 个功能模块 / 7 个页面 / 79 条测试）
+- 规模：中型（8 个功能模块 / 7 个页面 / 97 条测试）
 - 核心规则一：**版本序折叠 + 墓碑**——每个 `(table, pk)` 按 `version` 升序应用，`delete` 写墓碑；
   同键同版本出现两种内容整组不应用（`C_VERSION_CONFLICT`），删除之后到达的低版本 upsert
   不复活（`C_TOMBSTONE_RESURRECT`），删除之前到达的低版本照常应用后被覆盖。
 - 核心规则二：**水位线与半开窗口**——水位线 = 已应用事件最大 `event_time` − 10 分钟，单调
   不回退；`event_time < 水位线` 记迟到但**仍然应用**；快照取 `event_time ≤ as_of`，
   待定窗口 `(as_of, +inf)` 半开，两窗口不重叠也不留缝。
+- 核心规则三：**档案整行裁决**——客户档案双来源（订单库 / 结算库）先后到达时，每行四态
+  （采用新来源 / 沿用旧来源 / 失败保留旧版 / 重复不应用）；空值不覆盖（已确认字段绝不
+  改回空值）；标识字段未核验值不能替换已有值，异值判待核对冲突；普通字段按
+  `event_time` 新旧裁决，与到达先后无关；对外档案逐字段记录来源。
 - 使用者与工作流：订单库 CDC 管道负责人，每天收 3 个导出文件（主表、旧列名补数、迟到补丁），
   原先靠 grep 日志判断「这条到底应用了没有」；现在一次采信即可得到水位、迟到清单、冲突与
-  隔离明细，以及可导出复核的快照与运行清单。
+  隔离明细，以及可导出复核的快照与运行清单。客户档案另有两个来源导出（订单库全量慢、
+  结算库电话快），裁决后对外只保留一套名称，分歧进待核对清单。
 
 ## 功能模块
 
@@ -22,6 +27,7 @@
 | M5 快照物化 | 按水位物化快照，看待定键与三条对账 | POST /api/snapshot、页面 /snapshot | `app/modules/m5_snapshot/apply.py` `app/modules/m5_snapshot/materialize.py` `app/modules/m5_snapshot/service.py` | `tests/test_m5_snapshot.py` |
 | M6 批次续跑 | 查历史、看运行清单、续跑与重跑 | GET /api/batches、POST /api/batches/{id}/resume、页面 /batches | `app/modules/m6_batches/state.py` `app/modules/m6_batches/resume.py` `app/modules/m6_batches/history.py` `app/modules/m6_batches/service.py` | `tests/test_m6_batches.py` |
 | M7 审计导出 | 下载证据行、隔离、冲突、快照与清单 | GET /api/export/* | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/json_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` | `tests/test_m7_export.py` |
+| M8 档案裁决 | 采信双来源档案，看逐字段来源、整行裁决与待核对冲突 | POST /api/profile/import、GET /api/profile/*、页面 /profile | `app/modules/m8_profile/contract.py` `app/modules/m8_profile/arbitrate.py` `app/modules/m8_profile/service.py` | `tests/test_m8_profile.py` |
 
 端到端：`tests/test_e2e.py` 覆盖「样例 → 采信 → 归一 → 去重冲突 → 水位 → 快照 → 导出 → 页面」，
 含 4xx 失败输入与幂等重跑；`tests/test_invariants.py` 覆盖行账、键账、金额、幂等、迟到互补。
@@ -41,6 +47,11 @@
 | TRAP-19 | 一条事件同时像「重复」又像「冲突」，坏行还互相重复 | 按代码书写顺序覆盖，结果随遍历顺序变 | 优先级 `quarantine > conflict > duplicate > apply`，各桶由集合运算得出 | `app/modules/m3_dedup/service.py` | `tests/test_m3_dedup.py::test_conflict_beats_duplicate`、`tests/test_m3_dedup.py::test_priority_independent_of_input_order` |
 | TRAP-23 | 事件 `event_time` 恰好等于水位线 / 恰好等于 `as_of` | 两端都算，重复计入或漏计 | 迟到用半开 `[水位线, +inf)`；快照含 `as_of`、待定窗口 `(as_of, +inf)` 半开 | `app/modules/m4_watermark/watermark.py`、`app/modules/m5_snapshot/materialize.py` | `tests/test_m4_watermark.py::test_boundary_equal_watermark_is_not_late`、`tests/test_m5_snapshot.py::test_boundary_event_at_as_of_included_once` |
 | TRAP-26 | 拿上一轮旧导出再跑一次（最大事件 06:00 < 已持久化水位 08:52） | 无条件覆盖，水位回退、快照变旧 | 陈旧批次直接 409 `C_STALE_BATCH`，已落库结果不动 | `app/modules/m6_batches/resume.py`、`app/modules/m6_batches/state.py` | `tests/test_m6_batches.py::test_stale_input_rejected` |
+| TRAP-27 | 结算库把已核验的企业名称 / 统一标识留空（C1001 的名称、C1004 的地址） | 后到覆盖把已确认字段改回空值 | 空不覆盖：已确认字段绝不改回空值，普通字段同样适用，裁决记录留 `keep_blank_guard` | `app/modules/m8_profile/arbitrate.py` | `tests/test_m8_profile.py::test_confirmed_identity_not_blanked` |
+| TRAP-28 | 同一客户两套名称（订单库「北京岚山贸易有限公司」vs 结算库「北京岚山贸易公司」） | 页面来回翻两套名称 | 未核验值不能替换已有标识；异值判待核对冲突，对外档案只保留一套名称 | `app/modules/m8_profile/arbitrate.py` | `tests/test_m8_profile.py::test_identity_conflict_marked_pending`、`tests/test_m8_profile.py::test_unverified_cannot_replace_confirmed` |
+| TRAP-29 | 结算库一行统一标识含非法字符（C1005 的 `…2K1!`），同行的电话却是新值 | 部分字段应用，档案半新半旧 | 行契约不通过 → 整行失败，一个字段也不应用，档案保留旧版 | `app/modules/m8_profile/contract.py` | `tests/test_m8_profile.py::test_invalid_row_keeps_old_version_atomically` |
+| TRAP-30 | 同一结算文件重跑、或换批次键整文件重投 | 档案行、冲突、裁决记录翻倍 | 批次键幂等 + 行签名跨批次去重：重跑命中批次直接复用，重投行判 `duplicate`，冲突只累次 | `app/modules/m8_profile/service.py`、`app/store.py` | `tests/test_m8_profile.py::test_rerun_same_source_adds_nothing`、`tests/test_m8_profile.py::test_cross_batch_duplicate_rows_not_reapplied` |
+| TRAP-31 | 订单库慢，晚到的订单行电话比结算库已应用的还旧（08:00 vs 09:00） | 后到覆盖把新电话换回旧电话 | 普通字段按 `event_time` 新旧裁决，与到达先后无关，平手保留现值 | `app/modules/m8_profile/arbitrate.py` | `tests/test_m8_profile.py::test_ordinary_field_freshness_not_arrival_order` |
 
 ## 对账规则
 
@@ -68,7 +79,10 @@
   - `tests/test_invariants.py::test_amount_conservation_is_exact`（金额守恒，Decimal 精确）；
   - `tests/test_invariants.py::test_idempotent_rerun_keeps_rows_and_totals`（幂等重跑）；
   - `tests/test_m4_watermark.py::test_watermark_monotonic`（水位单调）；
-  - `tests/test_m5_snapshot.py::test_rebuild_is_idempotent`（物化可重复）。
+  - `tests/test_m5_snapshot.py::test_rebuild_is_idempotent`（物化可重复）；
+  - `tests/test_m8_profile.py::test_rerun_same_source_adds_nothing`（档案重跑不新增）；
+  - `tests/test_m8_profile.py::test_confirmed_identity_not_blanked`（已确认字段不改回空值）；
+  - `tests/test_m8_profile.py::test_invalid_row_keeps_old_version_atomically`（失败保留旧版）。
 
 ## 已知不覆盖
 
@@ -77,3 +91,5 @@
   状态一起纳入，属于下一期。
 - 事务边界未建模：同一事务的多条变更不保证原子可见。
 - 中文数字、货币符号（`￥`）不在金额归一范围内，遇到直接按类型错误隔离。
+- 档案裁决只覆盖 upsert：客户删除（墓碑）不在双来源裁决范围内；待核对冲突只标记与核对，
+  人工改值需回源修正后重放。

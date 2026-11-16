@@ -139,6 +139,31 @@ REASONS = {
     "X_EMPTY_SELECTION": _r(
         "X_EMPTY_SELECTION", WARN, "export",
         "导出选择为空", "先跑一次采信再导出"),
+    # ---- M8 客户档案裁决 ----
+    "P_ADOPT_ROW": _r(
+        "P_ADOPT_ROW", INFO, "profile",
+        "整行裁决：采用新来源，至少一个字段写入档案", "对外档案已按来源逐字段标注"),
+    "P_KEEP_ROW": _r(
+        "P_KEEP_ROW", INFO, "profile",
+        "整行裁决：沿用旧来源，没有任何字段被改写", "新行未带来更新或更优的值"),
+    "P_ROW_INVALID": _r(
+        "P_ROW_INVALID", ERROR, "profile",
+        "档案行契约不通过，整行不应用，保留旧版", "按契约修正后重放该行"),
+    "P_DUPLICATE_ROW": _r(
+        "P_DUPLICATE_ROW", INFO, "profile",
+        "同签名档案行重复到达，不重复应用", "上游重复投递，可忽略"),
+    "P_BLANK_GUARD": _r(
+        "P_BLANK_GUARD", WARN, "profile",
+        "新来源把已有字段留空，按空值不覆盖保留原值", "已确认字段不会改回空值"),
+    "P_CONFLICT_PENDING": _r(
+        "P_CONFLICT_PENDING", WARN, "profile",
+        "两来源的标识字段不一致，判待核对冲突", "核对后在冲突清单标记已核对"),
+    "P_CONFIRM_UPGRADE": _r(
+        "P_CONFIRM_UPGRADE", INFO, "profile",
+        "同值经核验来源确认，字段升级为已核验", "无需处理"),
+    "P_BATCH_REPLAY": _r(
+        "P_BATCH_REPLAY", INFO, "profile",
+        "同一输入重跑命中已完成批次，直接复用结果", "重跑幂等：不新增行、不改档案"),
 }
 
 

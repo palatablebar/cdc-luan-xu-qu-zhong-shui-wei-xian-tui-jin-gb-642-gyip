@@ -17,6 +17,10 @@
 - 快照按 `event_time ≤ as_of` 物化，`as_of` 之后的事件留待定窗口，一并给出合计；
 - 批次键 = 输入摘要 + 规则版本 + 参数，同一输入重跑命中批次、不新增行；
 - 导出事件证据、隔离区、冲突表、快照 CSV/JSON 与运行清单（含 `run_id` 与每个输入的 sha256）。
+- 客户档案双来源裁决：订单库（字段完整、已核验、更新慢）与结算库（电话快、常留空
+  已核验字段）先后到达时，对每行做整行裁决（采用新来源 / 沿用旧来源 / 失败保留旧版 /
+  重复不应用）；对外档案逐字段标注来源，标识字段不一致判待核对冲突；已确认字段不改回
+  空值，同一来源重跑不新增。
 
 ## 功能模块
 
@@ -29,6 +33,7 @@
 | M5 快照物化 | 按水位物化快照，看待定键 | `POST /api/snapshot`、页面 `/snapshot` | `apply.py` `materialize.py` |
 | M6 批次续跑 | 查历史、看清单、续跑与重跑 | `GET /api/batches`、页面 `/batches` | `state.py` `resume.py` `history.py` |
 | M7 审计导出 | 下载证据行、隔离、冲突、快照与清单 | `GET /api/export/*` | `csv_out.py` `json_out.py` `manifest_out.py` |
+| M8 档案裁决 | 采信双来源档案、看逐字段来源与待核对冲突 | `POST /api/profile/import`、页面 `/profile` | `contract.py` `arbitrate.py` |
 
 模块内统一是 `handler.py`（入口）+ `service.py`（编排）+ 两个纯规则/读写文件；
 定义写在 `docs/DATA-DICTIONARY.md`，坑与测试映射写在 `docs/DEPTH.md`。
@@ -40,6 +45,9 @@
 3. **水位单调**：`max(event_time) − 10min`，只由已应用事件推进，迟到只标记不丢弃；
 4. **快照半开**：`[-, as_of]` 进快照、`(as_of, +inf)` 待定，两窗口不重叠；
 5. **金额 Decimal**：`0.01` 量化、`ROUND_HALF_UP`，合计可独立复算。
+6. **档案整行裁决**：每行四态——采用新来源 / 沿用旧来源 / 失败保留旧版 / 重复不应用；
+   空值不覆盖（已确认字段绝不改回空值）；标识字段未核验值不能替换已有值，异值判
+   待核对冲突；普通字段按 `event_time` 新旧裁决，与到达先后无关。
 
 ## 启动
 
@@ -76,20 +84,24 @@ docker compose down -v             # 连数据库卷一起删
 | POST | `/api/batches/{id}/resume` | 续跑 |
 | GET | `/api/export/{events,quarantine,conflicts,snapshot}.csv` | 证据导出 |
 | GET | `/api/export/{snapshot,manifest}.json` | 快照与运行清单 |
+| POST | `/api/profile/import` | 档案采信（`source=all/order/settlement`） |
+| GET | `/api/profile`、`/api/profile/decisions`、`/api/profile/conflicts` | 对外档案、裁决记录、冲突清单 |
+| POST | `/api/profile/conflicts/{id}/ack` | 标记冲突已核对 |
 
-页面共 6 个：`/`、`/events`、`/schema`、`/conflicts`、`/snapshot`、`/batches`。
+页面共 7 个：`/`、`/events`、`/schema`、`/conflicts`、`/snapshot`、`/batches`、`/profile`。
 
 ## 目录
 
 ```text
 app/
   main.py config.py errors.py reasons.py manifest.py store.py web.py bootstrap.py
-  modules/m1_events/ … m7_export/        # 每模块 handler + service + 2 个规则文件
-  templates/                             # base + 6 页
+  modules/m1_events/ … m8_profile/        # 每模块 handler + service + 2 个规则文件
+  templates/                             # base + 7 页
   static/                                # theme / layout / components + 3 个 js
 docs/  DEPTH.md  DATA-DICTIONARY.md  RUNBOOK.md
-sample_data/  events_main.jsonl  events_v1_gb.csv  events_late.jsonl  events_clean.jsonl  schema_contract.json
-tests/  test_m1_events.py … test_m7_export.py  test_e2e.py  test_invariants.py  fixtures/
+sample_data/  events_main.jsonl  events_v1_gb.csv  events_late.jsonl  events_clean.jsonl
+  customers_order.jsonl  customers_settlement.jsonl  schema_contract.json
+tests/  test_m1_events.py … test_m8_profile.py  test_e2e.py  test_invariants.py  fixtures/
 ```
 
 ## 已知不覆盖
@@ -98,3 +110,5 @@ tests/  test_m1_events.py … test_m7_export.py  test_e2e.py  test_invariants.py
 - schema 演进只覆盖列改名与新增字段，不支持类型收窄；
 - 同一批次内不做跨批次键级合并（每个批次独立折叠，快照只反映当前批次）；
 - 事件级事务边界（同一事务的多个变更原子可见）未建模。
+- 档案裁决只覆盖 upsert 语义：客户删除（墓碑）不在双来源裁决范围内；
+- 待核对冲突只标记与核对（ack），不在页面上做人工改值——改值回源修正后重放。

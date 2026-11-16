@@ -26,6 +26,7 @@ NAV = (
     ("/conflicts", "冲突隔离", "conflicts"),
     ("/snapshot", "快照", "snapshot"),
     ("/batches", "批次", "batches"),
+    ("/profile", "客户档案", "profile"),
 )
 
 ROW_CLASS_LABELS = {

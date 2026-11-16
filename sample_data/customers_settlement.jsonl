@@ -1,0 +1,8 @@
+# profile-export source=settlement rows=7 charset=utf-8 generated=2026-11-15T17:40:00+08:00
+{"customer_id":"C1001","source":"settlement","event_time":"2026-11-15T09:30:00Z","fields":{"name":"","unified_id":"","phone":"139-1111-0001","contact":"张伟","address":""},"verified":[]}
+{"customer_id":"C1002","source":"settlement","event_time":"2026-11-15T09:31:00Z","fields":{"name":"北京岚山贸易公司","unified_id":"","phone":"138-2222-0002","contact":"王芳","address":""},"verified":[]}
+{"customer_id":"C1003","source":"settlement","event_time":"2026-11-15T09:32:00Z","fields":{"name":"","unified_id":"91440300MA5F8Q1RXX","phone":"137-3333-0003","contact":"李强","address":""},"verified":[]}
+{"customer_id":"C1004","source":"settlement","event_time":"2026-11-15T09:33:00Z","fields":{"name":"","unified_id":"91330106MA27W2XY4B","phone":"136-4444-0004","contact":"","address":""},"verified":[]}
+{"customer_id":"C1005","source":"settlement","event_time":"2026-11-15T09:34:00Z","fields":{"name":"","unified_id":"91510104MA6C9P2K1!","phone":"135-5555-0005","contact":"刘洋","address":""},"verified":[]}
+{"customer_id":"C1002","source":"settlement","event_time":"2026-11-15T09:31:00Z","fields":{"name":"北京岚山贸易公司","unified_id":"","phone":"138-2222-0002","contact":"王芳","address":""},"verified":[]}
+{"customer_id":"C1006","source":"settlement","event_time":"2026-11-15T09:35:00Z","fields":{"name":"","unified_id":"","phone":"134-6666-0006","contact":"赵磊","address":""},"verified":[]}

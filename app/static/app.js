@@ -112,6 +112,47 @@
       return;
     }
 
+    if (target.id === "btn-profile-import") {
+      var profileSelect = document.getElementById("profile-source-select");
+      busy(target, true);
+      request("/api/profile/import", { source: profileSelect ? profileSelect.value : "all" })
+        .then(function (data) {
+          if (data.idempotent_replay) {
+            toast("命中已有批次 " + data.batch_id + "，不新增行");
+          } else {
+            var c = data.counters || {};
+            toast("批次 " + data.batch_id + " · 采用 " + (c.adopted || 0)
+              + " · 沿用 " + (c.kept || 0) + " · 失败 " + (c.failed || 0));
+          }
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 650);
+        })
+        .catch(function (err) {
+          toast(err.message, true);
+          busy(target, false);
+        });
+      return;
+    }
+
+    if (target.classList.contains("btn-ack")) {
+      var conflictId = target.getAttribute("data-id");
+      if (!conflictId) return;
+      busy(target, true);
+      request("/api/profile/conflicts/" + encodeURIComponent(conflictId) + "/ack", {})
+        .then(function () {
+          toast("已标记核对");
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 650);
+        })
+        .catch(function (err) {
+          toast(err.message, true);
+          busy(target, false);
+        });
+      return;
+    }
+
     if (target.id === "btn-preview") {
       var input = document.getElementById("preview-input");
       var state = document.getElementById("preview-state");
